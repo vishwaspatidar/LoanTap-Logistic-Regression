@@ -1,0 +1,235 @@
+# Findings & Summary — LoanTap Personal Loan Credit Risk
+
+## 1. Business Objective
+
+The objective of this case study was to build a credit-risk model for LoanTap's Personal Loan product that predicts whether an applicant is likely to be **Fully Paid** or **Charged Off**.
+
+The key business challenge is the trade-off between:
+
+* **False Negative:** A genuine defaulter is approved → potential NPA and financial loss.
+* **False Positive:** A good borrower is rejected → lost customer and revenue.
+
+Therefore, **default detection is more important than simply maximizing accuracy**. 
+
+---
+
+## 2. Dataset & Initial Findings
+
+The dataset contains **396,030 loan records and 27 original features**.
+
+The target variable is highly imbalanced:
+
+* **80.4% Fully Paid**
+* **19.6% Charged Off**
+
+This approximately 4:1 imbalance makes accuracy an unreliable measure of model performance. A model could achieve around 80% accuracy simply by predicting most applicants as Fully Paid while detecting very few actual defaulters. 
+
+### Important EDA findings
+
+* Grades **B and C** make up a large portion of the portfolio.
+* **RENT** and **MORTGAGE** are the dominant home-ownership categories.
+* **Debt consolidation** is by far the most common loan purpose.
+* **Small-business loans have the highest observed default rate** among purposes.
+* Employment length shows only a relatively weak relationship with default.
+* Credit utilization and credit history show more meaningful differences between Fully Paid and Charged Off borrowers.   
+
+---
+
+## 3. Data Preparation
+
+The dataset was prepared through:
+
+* Removal of high-cardinality fields such as `address`, `emp_title`, and `title`.
+* Missing-value treatment using median and group-based imputation.
+* Conversion of `emp_length` into an ordinal numerical feature.
+* Creation of binary indicators for public records, mortgage accounts and bankruptcies.
+* Creation of `credit_age_years`.
+* Conversion of loan `term` into numerical months.
+* IQR-based outlier capping.
+* One-hot encoding of categorical variables.
+* Standardization of numerical features.
+
+The final modelling dataset contained **32 predictors plus the target variable**. 
+
+---
+
+## 4. Baseline Model — The Accuracy Trap
+
+The initial Logistic Regression model produced:
+
+| Metric                |   Baseline |
+| --------------------- | ---------: |
+| Accuracy              | **80.58%** |
+| ROC-AUC               |  **0.711** |
+| Charged Off Precision |   **0.53** |
+| Charged Off Recall    |   **0.08** |
+| Charged Off F1        |   **0.14** |
+
+The confusion matrix shows that the model correctly identified only **1,914 of 23,302 actual defaulters**, while **21,388 defaulters were incorrectly classified as Fully Paid**. 
+
+### Key Finding
+
+**The 80.6% accuracy was misleading.**
+
+The model was very good at identifying the majority class but extremely poor at identifying the minority class that matters most from a credit-risk perspective.
+
+This established that **class imbalance needed to be addressed before considering the model suitable for underwriting**.
+
+---
+
+## 5. SMOTE — Major Improvement in Default Detection
+
+SMOTE was applied only to the training data while keeping the test set in its original real-world distribution.
+
+The results changed substantially:
+
+| Metric                | Baseline | Logistic Regression + SMOTE |
+| --------------------- | -------: | --------------------------: |
+| Accuracy              |     ~80% |                    **~66%** |
+| ROC-AUC               |    ~0.71 |                   **~0.71** |
+| Charged Off Precision |     ~52% |                    **~32%** |
+| Charged Off Recall    |      ~8% |                    **~64%** |
+| Charged Off F1        |    ~0.14 |                   **~0.42** |
+
+The most important improvement was **Charged Off recall increasing from approximately 8% to 64%** — an approximately **8× improvement in default detection**. 
+
+### Business Interpretation
+
+The reduction in accuracy is not necessarily a negative outcome.
+
+The SMOTE model deliberately identifies more risky borrowers. This increases false positives, but it also prevents many more genuine defaulters from being treated as safe borrowers.
+
+For LoanTap, **missing a defaulter can be substantially more expensive than manually reviewing or rejecting a borderline good borrower**.
+
+---
+
+## 6. Threshold Analysis
+
+The probability threshold creates a direct precision-recall trade-off:
+
+| Threshold | Precision |    Recall |        F1 | Interpretation                        |
+| --------: | --------: | --------: | --------: | ------------------------------------- |
+|       0.2 |     ~0.21 |     ~0.99 |     ~0.34 | Extremely aggressive                  |
+|       0.3 |     ~0.23 |     ~0.93 |     ~0.37 | Very high recall                      |
+|       0.4 |     ~0.27 |     ~0.81 |     ~0.40 | High recall                           |
+|   **0.5** | **~0.32** | **~0.64** | **~0.42** | **Best F1 / balanced starting point** |
+|       0.6 |     ~0.37 |     ~0.44 |     ~0.40 | More conservative                     |
+|       0.7 |     ~0.43 |     ~0.26 |     ~0.32 | Many defaulters missed                |
+|       0.8 |     ~0.50 |     ~0.10 |     ~0.17 | Very conservative                     |
+
+At the **0.5 threshold**, the model provides the highest F1 score while retaining approximately 64% recall. 
+
+However, **0.5 should not automatically be considered the final business threshold**. The optimal threshold should depend on LoanTap's actual financial cost of:
+
+`Cost of missed defaulter vs. Cost of rejecting a good borrower`
+
+---
+
+## 7. Model Stability
+
+A **5-fold stratified cross-validation** was performed with SMOTE applied inside each fold to avoid data leakage.
+
+The fold-level results were highly consistent:
+
+* ROC-AUC: approximately **0.707–0.711**
+* Recall: approximately **0.632–0.644**
+* Precision: approximately **0.318–0.320**
+* F1: approximately **0.424–0.428**
+* PR-AUC: approximately **0.364–0.369**
+* Accuracy: approximately **0.660–0.663**
+
+This consistency indicates that the model's performance is reasonably stable across the folds. 
+
+For this imbalanced problem, **PR-AUC is particularly useful because it focuses on the minority class rather than being influenced heavily by the large number of true negatives**. 
+
+---
+
+## 8. Most Important Risk Factors
+
+The Logistic Regression coefficients identified several meaningful signals.
+
+### Features associated with higher default risk
+
+1. **`sub_grade`** — strongest signal in the model
+2. **`dti`** — higher debt burden relative to income
+3. **`revol_util`** — higher credit utilization
+4. **Public-record / bankruptcy indicators**
+5. **Longer loan term**
+
+### Features associated with lower default risk
+
+1. **`annual_inc`** — higher income
+2. **`credit_age_years`** — longer credit history
+3. **`mort_acc_flag`** — presence of mortgage history
+
+These relationships provide interpretable signals that can support underwriting decisions beyond the model's predictions. 
+
+---
+
+# 9. Business Recommendations
+
+### 1. Do not optimize for accuracy
+
+Accuracy should not be the primary metric because of the 80:20 class imbalance.
+
+**Charged Off recall, precision, F1 and PR-AUC should receive greater attention.**
+
+### 2. Use threshold calibration
+
+The decision threshold should be chosen using LoanTap's actual financial cost structure.
+
+* If NPA losses are the dominant concern → lower threshold and prioritize recall.
+* If customer acquisition is more important → higher threshold and prioritize precision.
+* Use financial outcome data and A/B testing to determine the final operating point. 
+
+### 3. Introduce manual review for borderline applicants
+
+The model should act as a **first-stage underwriting screen**, rather than the sole decision-maker.
+
+Borderline applications can be routed for additional verification or manual review. 
+
+### 4. Strengthen checks around high-risk signals
+
+LoanTap should consider:
+
+* Stricter checks for high `dti`.
+* Additional review for high `revol_util`.
+* Enhanced due diligence for public-record or bankruptcy indicators.
+* Lower loan amounts or shorter terms for borrowers with very short credit histories.
+* Additional underwriting criteria for small-business loan purposes.
+* Income-to-installment affordability checks. 
+
+### 5. Improve the feature set
+
+The stable ROC-AUC of approximately 0.71 before and after SMOTE indicates that SMOTE improved the model's operating point but **did not materially improve its underlying discrimination ability**.
+
+Future versions should incorporate richer information such as:
+
+* Credit bureau information
+* Detailed repayment history
+* Better income verification
+* Additional borrower-level financial information
+
+These could help improve the model's ability to distinguish between good and risky borrowers. 
+
+---
+
+# 10. Final Conclusion
+
+The central finding of this case study is:
+
+> **A model with higher accuracy is not necessarily a better credit-risk model.**
+
+The baseline Logistic Regression achieved approximately **80% accuracy but detected only 8% of actual defaulters**.
+
+After addressing class imbalance with SMOTE, Charged Off recall increased to approximately **64%**, while accuracy decreased to approximately **66%** and ROC-AUC remained around **0.71**.
+
+Therefore, the **Logistic Regression + SMOTE model is the preferred model for this case study** because it is substantially better aligned with LoanTap's primary business objective: **identifying potential defaulters and reducing NPA risk**. 
+
+However, the model should **not be treated as a final autonomous lending decision system**. Its effectiveness depends heavily on the classification threshold and the relative financial costs of false negatives and false positives.
+
+The recommended approach is to use the model as a **first-tier underwriting screen**, calibrate the threshold using actual financial outcomes, manually review borderline cases, enrich the feature set, and periodically retrain the model as new repayment data becomes available. 
+
+### One-line project takeaway
+
+**SMOTE transformed Logistic Regression from an accuracy-focused model that missed most defaulters into a more business-relevant risk-screening model that detects ~64% of defaulters, while highlighting the need for threshold optimization and better credit-risk features.**
